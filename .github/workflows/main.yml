@@ -21,32 +21,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      # -------- VERSION DISCOVERY (Windows-safe) --------
+      # ---------- VERSION DETECTION (safe for all OS) ----------
       - name: Determine Version
         id: ver
         shell: bash
         run: |
           if git describe --tags --exact-match >/dev/null 2>&1; then
-            TAG=$(git describe --tags --exact-match)
-            echo "version=$TAG" >> $GITHUB_OUTPUT
+            echo "version=$(git describe --tags --exact-match)" >> $GITHUB_OUTPUT
           else
-            VERSION=dev-$(date +'%Y%m%d-%H%M')
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "version=dev-$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
           fi
 
       - uses: krdlab/setup-haxe@master
         with:
           haxe-version: 4.3.6
 
-      # ---------------- LINUX SETUP ----------------
+      # ---------- Linux Dependencies (VLC for hxvlc) ----------
       - name: Install VLC (Linux only)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt update
           sudo apt install -y libvlc-dev libvlccore-dev
 
-      # ---------------- ANDROID SETUP ----------------
-      - name: Setup Android SDK (Linux only)
+      # ---------- Android SDK + NDK ----------
+      - name: Setup Android SDK
         if: startsWith(matrix.os, 'ubuntu')
         uses: android-actions/setup-android@v3
         with:
@@ -54,7 +52,7 @@ jobs:
           ndk: 25.1.8937393
           cmake: 3.22.1
 
-      # ---------------- INSTALL HAXELIBS ----------------
+      # ---------- Install Haxelibs ----------
       - name: Install Haxelibs
         run: |
           haxelib install hxcpp
@@ -69,10 +67,11 @@ jobs:
           haxelib install hscript
           haxelib install hxvlc
           haxelib git discord_rpc https://github.com/Aidan63/linc_discord-rpc
+
           haxelib install hmm
           haxelib run hmm install
 
-      # ---------------- ANDROID CONFIG ----------------
+      # ---------- Configure Android ----------
       - name: Configure Android
         if: startsWith(matrix.os, 'ubuntu')
         run: |
@@ -81,7 +80,7 @@ jobs:
           haxelib run lime config JAVA_HOME $JAVA_HOME_17_X64
           haxelib run lime config ANDROID_SETUP true
 
-      # ---------------- PLATFORM BUILDS ----------------
+      # ---------- Desktop Builds ----------
       - name: Build Windows
         if: startsWith(matrix.os, 'windows')
         run: haxelib run lime build windows -D officialBuild
@@ -94,15 +93,15 @@ jobs:
         if: startsWith(matrix.os, 'macos')
         run: haxelib run lime build mac -D officialBuild
 
-      - name: Build Android
+      # ---------- Mobile Builds ----------
+      - name: Build Android (APK)
         if: startsWith(matrix.os, 'ubuntu')
         run: haxelib run lime build android -D officialBuild -ONLY_ARMV7
 
-      - name: Build iOS
+      - name: Build iOS (IPA)
         if: startsWith(matrix.os, 'macos')
         run: haxelib run lime build ios -nosign -D officialBuild -DMOBILE_BUILD
 
-      # ---------------- PACKAGE iOS IPA ----------------
       - name: Package IPA
         if: startsWith(matrix.os, 'macos')
         run: |
@@ -111,25 +110,36 @@ jobs:
           mv *.app Payload
           zip -r VsDave.ipa Payload
 
-      # ---------------- ZIP OUTPUTS ----------------
-      - name: Zip Build Output
+      # ---------- Move artifacts to clean folders ----------
+      - name: Organize Artifacts
+        shell: bash
         run: |
-          mkdir build
-          zip -r build/build-${{ steps.ver.outputs.version }}-${{ matrix.os }}.zip export/release/*/*
+          mkdir -p artifacts/${{ matrix.os }}
 
+          if [[ "${{ matrix.os }}" == windows-latest ]]; then
+            cp -r export/release/windows/bin artifacts/windows-latest
+          elif [[ "${{ matrix.os }}" == ubuntu-latest ]]; then
+            cp -r export/release/linux/bin artifacts/ubuntu-latest
+            cp -r export/release/android/bin/app/build/outputs/apk/release/*.apk artifacts/ubuntu-latest/android.apk || true
+          elif [[ "${{ matrix.os }}" == macos-latest ]]; then
+            cp -r export/release/macos/bin artifacts/macos-latest
+            cp export/release/ios/build/*-iphoneos/VsDave.ipa artifacts/macos-latest/ios.ipa || true
+          fi
+
+      # ---------- Upload Platform-Specific Artifacts ----------
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.os }}-build
-          path: build/*.zip
+          name: ${{ matrix.os }}-${{ steps.ver.outputs.version }}
+          path: artifacts/${{ matrix.os }}
 
-  # ------------ RELEASE JOB ------------
+  # ---------- Release job for tags ----------
   Release:
     needs: Build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - name: Download Artifacts
+      - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
           path: release
@@ -140,8 +150,11 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: "VsDave ${{ github.ref_name }}"
           body: |
-            Full automated multi-platform release  
+            Automatic multi-platform release  
+            Version: ${{ github.ref_name }}  
             Commit: ${{ github.sha }}
-          files: release/**/*.zip
+
+          files: release/**/*
+
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
